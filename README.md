@@ -1,6 +1,4 @@
-# PolyDrunk_Spreat_Bot
-
-# 🎯 Polymarket Down-Spread Scalper Bot
+# Polymarket Down-Spread Scalper Bot
 
 A **completely separate** bot from the delta/momentum strategy bot. This one
 shares no risk logic, no ATR, no delta threshold, no confidence scoring — it
