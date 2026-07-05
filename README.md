@@ -1,204 +1,191 @@
-# Polymarket Spread Scalper Bot
+PolyReact
 
-A separate bot from the delta/momentum strategy bot, with its own logic — but
-it has evolved to reuse the same *kind* of signal (price movement magnitude +
-momentum agreement) that the delta bot validated, applied here as a
-forward-looking predictor rather than a same-window filter.
+A Polymarket trading bot for the 5-minute BTC/ETH Up/Down markets. It buys
+one side cheaply, then sells for a small, fixed profit margin once the price
+moves in its favor — or exits for whatever's available if that never
+happens before the window closes.
 
----
+It runs in two variants, selected at launch:
 
-## Read this before running `--live`
 
-This bot's loss shape is **fundamentally different and riskier** than the
-delta bot's:
+predict — decides direction from the previous window's price
+action, and buys the instant the new window opens.
+react — watches the new window's own real-time price movement for
+30 seconds before deciding, then buys at whatever price results.
 
-- The delta bot only enters when the market price already strongly agrees
-  with the signal (≥0.92), so a loss is bounded and historically rare.
-- **This bot buys near a coin-flip price (~50¢) and profits from a modest
-  spread (58-60¢), not from being right about the final outcome.** If the
-  price never reaches that range and you're forced to exit late, **the loss
-  can approach your full stake on that trade** — not a bounded, small
-  percentage like the delta bot.
-- **Real dry-run testing has already shown this failure mode happening** —
-  in an early, small sample, roughly 1 in 4 windows ended in a force-exit
-  loss, sometimes on BTC and ETH simultaneously (a real, observed
-  correlation — losses are not necessarily independent across assets).
-- The entry signal (below) is a genuine attempt to reduce *how often* this
-  happens, informed by real validated data from the delta bot — but it does
-  **not** change what happens *when* the signal is wrong. Keep testing with
-  `--dry-run` before trusting this with `--live` capital.
 
----
 
-## Strategy
+⚠️ Read this before running --live
 
-1. Wake 10 seconds before each new 5-minute BTC/ETH Up/Down window opens.
-2. As that window is about to close, check two things about the *ending*
-   window's own price action (via Binance):
-   - **Magnitude** — how far has price moved from that window's own open,
-     as a percentage (`ENTRY_MIN_DELTA_PCT`, default `0.06%`)?
-   - **Momentum** — does the last ~1-2 minutes of price action agree with
-     that same direction?
-   Both must agree, and the magnitude must clear the threshold, or **this
-   window is skipped entirely** — no trade. This is meant to take fewer,
-   more selective trades (rough target: 100-150/day instead of all 288),
-   the same way the delta bot skips low-delta windows.
-3. If the signal is confident, the instant the window opens, attempt to buy
-   the chosen side (Up or Down) as close to $0.50 as possible (ceiling
-   $0.52). If unfilled after 2 seconds, cancel.
-4. If bought, watch for that side's price to reach $0.58-$0.60. Attempt to
-   sell on every such opportunity — there may be more than one per window,
-   and each is tracked and logged distinctly.
-5. If no opportunity results in a sale by the time 60 seconds remain in the
-   window, exit immediately at whatever price is available — no floor, no
-   ceiling — to avoid holding into resolution uncertainty.
-6. Sleep until 10 seconds before the next window, repeat.
+This bot buys near a mid-range price and profits from a small move in its
+favor — it does not need to correctly predict which side ultimately wins the
+market. But if price never moves the way it needs to, and the window
+approaches its close, the bot exits at whatever price is available. That
+exit price could be far below the entry price, and in the worst case, close
+to a full loss on that trade. Always start with --dry-run and let it
+accumulate real results before ever using --live.
 
-Runs **BTC and ETH in parallel** on independent threads, each on its own
-5-minute cycle.
 
-**Note on the `ENTRY_MIN_DELTA_PCT` default (0.06%):** this value is
-informed by real data — it's the exact threshold that, on the delta bot,
-eliminated its one real loss across 107 trades while preserving all 68 wins
-above that line. But that was answering a different question (filtering
-entries within the same window) than this bot asks (predicting the *next*
-window from the *previous* one's move). It's a reasonable starting point,
-not a value validated for this specific use yet — treat it as a hypothesis
-to test with your own dry-run data, not a settled number.
+🧠 How each variant decides
 
----
+predict
 
-## Requirements
+Looks at the window that's about to close: how far has price moved from
+that window's own open, as a percentage. If that move clears
+ENTRY_MIN_DELTA_PCT (0.05%), the bot trusts that direction and buys that
+side the instant the new window opens. If the move is too small, the window
+is skipped — no trade, no signal to act on.
 
-- Python 3.10+
-- A Polymarket account with USDC on Polygon (for `--live` mode)
-- No Binance account needed — momentum/magnitude data comes from Binance's
-  public API (no auth required), same source the delta bot uses
+Skipped windows are still watched in the background (no real order placed)
+to check what would have happened, logged separately to shadow_log.csv.
 
----
+react
 
-## Installation
+Instead of looking backward, this variant watches the market currently open
+right now. For REACT_WAIT_SEC (30 seconds), it samples the underlying
+asset's price every REACT_POLL_SEC (2 seconds), building a real price
+history for that window. At the end of that observation period, it checks
+two things together:
 
-```bash
-git clone https://github.com/kabeer-artistic-joy/PolyDrunk_Spreat_Bot.git
+
+Move size — did price move at least REACT_MIN_DELTA_PCT (0.005%)
+from where it started?
+Cleanliness — how much of the total price range during that window was
+"wasted" on back-and-forth movement, versus contributing to the net move?
+A price that climbed steadily is clean; a price that spiked up, dropped,
+and spiked again before ending up in the same place is not, even if the
+net move looks identical.
+
+
+Only if both checks pass does the bot buy. If either fails, the window is
+skipped — this variant does not force a trade when the signal isn't there.
+
+
+💰 How a trade plays out, once entered
+
+Buy:
+
+
+predict buys at a target of $0.50, with a $0.52 ceiling, within 3 seconds
+of window open.
+react buys at whatever price the market shows after its 30-second
+observation, up to that price plus a small buffer ($0.02), within 3
+seconds.
+
+
+Sell:
+
+
+predict sells once price reaches $0.58 (floor), aiming for $0.60.
+react sells once price reaches its own entry price plus $0.05 — a
+margin relative to wherever it actually bought in, not a fixed number.
+
+
+In both variants, the sell order rests directly on the order book the
+moment the buy confirms, rather than the bot checking the price
+periodically and reacting afterward — this lets the sell fill the instant
+the market crosses the trigger, without waiting on a polling cycle.
+
+If the price never reaches the sell trigger: in the final 30 seconds of
+the window (FORCE_EXIT_SECONDS_LEFT), the bot exits at whatever price is
+currently available, with no minimum — this is a deliberate "get out" move,
+not a profit attempt.
+
+
+📋 Requirements
+
+
+Python 3.10+
+A Polymarket account with USDC on Polygon, for --live mode
+No separate account needed for Binance — price data comes from Binance's
+public API, no authentication required
+
+
+
+🚀 Installation
+
+bashgit clone https://github.com/kabeer-artistic-joy/PolyDrunk_Spreat_Bot.git
 cd PolyDrunk_Spreat_Bot
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env
 # Edit .env — only required for --live mode
-```
 
----
 
-## Usage
+🖥️ Usage
 
-```bash
-# Dry run — real order book + real Binance data, no real orders, no funds at risk
-python spread_bot.py --dry-run
+bash# predict variant, dry run
+python spread_bot.py --dry-run --variant predict
 
-# Live — real orders, real funds
-python spread_bot.py --live --amount 2
-```
+# react variant, dry run
+python spread_bot.py --dry-run --variant react
 
-Press **Ctrl+C** to stop and print the session summary.
+# Live, with a $2 stake per trade
+python spread_bot.py --live --amount 2 --variant react
 
----
+--variant defaults to predict if not specified. Press Ctrl+C to stop
+and print a session summary.
 
-## Configuration
 
-Key constants are defined at the top of `spread_bot.py`:
+⚙️ Configuration
 
-| Constant | Default | Description |
-|---|---|---|
-| `ENTRY_MIN_DELTA_PCT` | `0.06` | Minimum % move (from the ending window's own open) required to trust its direction as a signal |
-| `BUY_TARGET_PRICE` | `0.50` | Price we hope to pay |
-| `BUY_CEILING_PRICE` | `0.52` | Max we're willing to pay (actual limit order price) |
-| `BUY_TIMEOUT_SEC` | `2.0` | Cancel the buy if unfilled after this long |
-| `SELL_TARGET_PRICE` | `0.60` | Price we hope to sell at |
-| `SELL_FLOOR_PRICE` | `0.58` | Minimum acceptable sell price that triggers a sell attempt (not a ceiling — a better price will be taken if available) |
-| `FORCE_EXIT_SECONDS_LEFT` | `60` | Exit at any price if still holding with this much time left |
+All key values are constants near the top of spread_bot.py:
 
----
+ConstantValueApplies toBUY_TARGET_PRICE$0.50predictBUY_CEILING_PRICE$0.52predictBUY_TIMEOUT_SEC3.0spredictSELL_TARGET_PRICE$0.60predictSELL_FLOOR_PRICE$0.58predictENTRY_MIN_DELTA_PCT0.05%predictREACT_WAIT_SEC30sreactREACT_POLL_SEC2sreactREACT_MIN_DELTA_PCT0.005%reactREACT_CLEANLINESS_MIN0.5reactREACT_BUY_TIMEOUT_SEC3.0sreactREACT_BUY_CEILING_BUFFER$0.02reactREACT_PROFIT_MARGIN$0.05reactFORCE_EXIT_SECONDS_LEFT30sboth
 
-## Order mechanics — exactly what type of order is used where
 
-| Action | Order type | Why |
-|---|---|---|
-| Buy at window open | **Limit, GTC** | Needs to rest for up to 2 seconds in case liquidity appears a moment after open — a market/FAK order only checks the book once, right now, and won't wait |
-| Sell at 58-60¢ opportunity | **Limit, FAK** | Instant — check the book now, fill what's available, cancel any leftover |
-| Force-exit (last 60s) | **Market, FAK** | Deliberately no price limit — the goal here is guaranteed exit, not price protection |
+📊 What --dry-run measures
 
----
+Dry-run mode polls Polymarket's real, live order book and Binance's real
+price data throughout every window — it does not simulate or assume prices.
+It records, for every window:
 
-## What `--dry-run` actually measures
 
-Dry-run mode polls Polymarket's real, live public order book and Binance's
-real price data throughout each window — it is not a simulation with assumed
-prices. It records:
+Whether the entry signal fired at all, and the exact numbers behind that
+decision
+Whether a real buy order would have filled, and at what price
+Whether the sell trigger was reached, and if so, whether there was enough
+real market depth to fill the position
+What would have happened at forced exit if the trigger was never reached
 
-- Whether the entry signal fired at all, and the real delta% behind that
-  decision (logged per-trade, so you can review after the fact whether
-  `0.06%` is actually the right bar)
-- Whether a real ask at or below the buy ceiling existed within the timeout
-- Every distinct point where the real bid reached the sell floor, and
-  whether there was enough real depth to fill your position size
-- What would have happened at forced exit if no opportunity worked out
 
----
+All of this is written to trades_log.csv in the same folder, live, trade
+by trade — no need to stop the bot to see results. predict's skipped
+windows are additionally shadow-tracked to shadow_log.csv.
 
-## Project Structure
 
-```
-spread-bot/
-├── spread_bot.py        # Main bot
-├── requirements.txt      # Python dependencies
-├── .env.example          # Environment variable template
+📁 Project Structure
+
+PolyDrunk_Spreat_Bot/
+├── spread_bot.py        # Main bot — both variants
+├── requirements.txt
+├── .env.example
 ├── .gitignore
 └── README.md
-```
 
-Trade-by-trade results are logged live to `trades_log.csv` in this folder,
-including the signal reasoning (`target_side`, `signal_delta_pct`,
-`signal_reason`) for every window — whether it was skipped, bought, sold, or
-force-exited.
 
----
+🔍 Known limitations
 
-## Known uncertainties in this implementation
 
-Documented honestly rather than glossed over:
+The exact field name Polymarket uses for balance in one specific fallback
+check has not been independently confirmed from documentation — if it
+fires, the bot logs the raw response so the correct field can be
+identified from real data.
+Winning the race to be among the first to fill at a given price depends on
+network latency and how quickly counterparties are present on the order
+book — this is a real constraint the bot cannot fully control for.
+react's price observation uses Binance's own price feed as a proxy for
+momentum; Polymarket's own price for a given side does not always move in
+perfect lockstep with the underlying asset's price.
 
-- **`ENTRY_MIN_DELTA_PCT = 0.06%` has not been validated for this specific
-  use case yet.** It's an informed starting point borrowed from the delta
-  bot's real results, not a number proven correct here.
-- **Order-fill detection in live mode** relies on `get_order()` returning
-  `None` once an order leaves the open-orders index — inferred behavior, not
-  something confirmed in Polymarket's documentation for this exact case.
-- **The delayed-buy-fill price is not fully tracked.** If a buy order rests
-  and fills sometime within the 2-second window (rather than matching
-  instantly), the logged price falls back to the ceiling price, which may
-  understate actual profit if the real fill was better. The immediate-match
-  case (the common one) does correctly parse the real fill price.
-- **Winning the race for the first 1-2 seconds of liquidity** depends on
-  network latency and how fast market makers seed that opening liquidity —
-  a real competitive factor this code cannot fully control for.
-- **No hard-confirmed minimum order size exists in this codebase.** An
-  earlier assumption of "5 shares minimum" had no verified source and has
-  been removed — if Polymarket enforces some real minimum, you'll discover
-  it directly via a live order response rather than a guess baked into the
-  code.
-- **Order-book polling volume during the sell-watch phase (~1 request/sec
-  for up to ~4 minutes, across two assets continuously) has not been
-  checked against Polymarket's actual public API rate limits.**
 
----
 
-## Disclaimer
+⚠️ Disclaimer
 
-> This software is for educational and experimental purposes only. This is
-> **not financial advice**. This strategy's loss shape can approach full
-> stake per losing trade — materially riskier than a bounded-entry strategy.
-> Early real testing has already shown a meaningful force-exit-loss rate in
-> a small sample. Always start with `--dry-run` and accumulate real evidence
-> before considering `--live`. Never risk money you cannot afford to lose.
+
+This software is for educational and experimental purposes only. This is
+not financial advice. Both variants can lose close to a full stake on a
+single trade if the price never reaches the sell trigger. Always start
+with --dry-run and accumulate real evidence before considering --live.
+Never risk money you cannot afford to lose.
