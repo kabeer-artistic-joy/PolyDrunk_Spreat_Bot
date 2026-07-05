@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Polymarket Down-Spread Scalper Bot
+PolyReact
 ====================================
 A completely separate strategy from the delta/momentum bot. This bot does NOT
 use price direction signals, delta thresholds, momentum, or ATR. It tests one
@@ -78,7 +78,7 @@ FORCE_EXIT_SECONDS_LEFT = 60  # in the final N seconds of the window, exit at an
 # INTO the new window, watches its own real price action to decide direction,
 # then buys at whatever price results — targeting a fixed profit MARGIN from
 # that actual entry price, rather than fixed absolute floor/target prices.
-REACT_WAIT_SEC       = 5     # observe the new window for this long before deciding direction
+REACT_WAIT_SEC       = 2     # observe the new window for this long before deciding direction
 REACT_BUY_TIMEOUT_SEC = 2    # then buy within this long, same cancel-if-unfilled logic
 REACT_BUY_CEILING    = 0.58  # wider than BUY_CEILING_PRICE — price may have already drifted further from 50c by the time we act
 REACT_PROFIT_MARGIN  = 0.07  # target this much profit per share above actual entry price (lowered from 0.09 to split the new 0.06-0.08 range, since waiting longer to enter means less exposure to the full move)
@@ -399,7 +399,7 @@ class SpreadBot:
             self._init_client()
 
         log("=" * 70)
-        log(f"Down-Spread Scalper | {self.mode_str.upper()} | ${amount:.2f}/trade | bot_name={self.bot_name}")
+        log(f"PolyReact | {self.mode_str.upper()} | ${amount:.2f}/trade | bot_name={self.bot_name}")
         if self.variant == "react":
             log(f"Variant: REACT | wait {REACT_WAIT_SEC}s to observe, then buy within {REACT_BUY_TIMEOUT_SEC}s, ceiling ${REACT_BUY_CEILING}")
             log(f"Sell: entry price + ${REACT_PROFIT_MARGIN} margin | force-exit last {FORCE_EXIT_SECONDS_LEFT}s")
@@ -901,7 +901,7 @@ class SpreadBot:
 # ─── ENTRY POINT ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Polymarket Down-Spread Scalper Bot")
+    parser = argparse.ArgumentParser(description="PolyReact")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true", help="Observe real order book data, place no real orders")
     mode.add_argument("--live", action="store_true", help="Place real orders with real funds")
